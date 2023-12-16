@@ -1,0 +1,4 @@
+# ninja log v5
+0	7012	1702702785313892819	/home/luoyicong/Deformable-DETR-main/models/ops/build/temp.linux-x86_64-cpython-38/home/luoyicong/Deformable-DETR-main/models/ops/src/cpu/ms_deform_attn_cpu.o	a87984f38be3855a
+0	20162	1702702798453742710	/home/luoyicong/Deformable-DETR-main/models/ops/build/temp.linux-x86_64-cpython-38/home/luoyicong/Deformable-DETR-main/models/ops/src/cuda/ms_deform_attn_cuda.o	2bf913e36f8f2c90
+0	27696	1702702805981658020	/home/luoyicong/Deformable-DETR-main/models/ops/build/temp.linux-x86_64-cpython-38/home/luoyicong/Deformable-DETR-main/models/ops/src/vision.o	668a4394d901a9f1
