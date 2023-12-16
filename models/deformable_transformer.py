@@ -116,41 +116,87 @@ class DeformableTransformer(nn.Module):
 
     def get_valid_ratio(self, mask):
         _, H, W = mask.shape
+        # (bs, H) 在dim1上求sum => (bs,)
         valid_H = torch.sum(~mask[:, :, 0], 1)
+        # (bs, W) 在dim1上求sum => (bs,)
         valid_W = torch.sum(~mask[:, 0, :], 1)
         valid_ratio_h = valid_H.float() / H
         valid_ratio_w = valid_W.float() / W
+        # (bs, 2)
         valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)
         return valid_ratio
 
     def forward(self, srcs, masks, pos_embeds, query_embed=None):
-        assert self.two_stage or query_embed is not None
 
+        # 如果是2-stage模式，那么Decoder的query embedding由Encoder预测的top-k proposal boxes进行位置嵌入来产生
+        # 否则，使用预设的embedding
+        assert self.two_stage or query_embed is not None
+        '''
+        srcs (lvl, bs, C, H, W)
+        masks (lvl, bs, H, W)
+        pos_embeds (lvl, bs, C, H, W)
+        query_embed ()
+
+        为Encoder的输入做准备:
+        i). 将各层特征图（已经映射到c=256维度）flatten并concat到一起: (bs, h1w1 + ... + hl*wl, c=256)
+        ii). 将各层特征图对应的mask（指示了哪些位置是padding） flatten并concat：(bs, h1w1 + ... + hl*wl)
+        iii). 将各层特征图对应的position embedding加上scale level embedding（用于表明query属于哪个特征层），然后flatten并concat：(bs, h1w1 + ... + hl*wl, c=256)
+        iv). 将各层特征图的宽高由list变为tensor:  (lvl, 2)
+        v). 由于将所有特征层的特征点concat在了一起，因此为了区分各层，需要计算对应于被flatten的那个维度的起始index（第一层当然是0，后面就是累加各层的）
+        vi). 计算各特征层中非padding部分的边长（高&宽）占特征图边长的比例
+        '''
         # prepare input for encoder
+        # 以下的flatten是指将h, w两个维度展平为 h*w
         src_flatten = []
         mask_flatten = []
+        # 各层特征图对应的position embedding + scale level embedding
         lvl_pos_embed_flatten = []
+        # 各层特征图的尺寸
         spatial_shapes = []
         for lvl, (src, mask, pos_embed) in enumerate(zip(srcs, masks, pos_embeds)):
-            bs, c, h, w = src.shape
+            bs, c, h, w = src.shape  # (bs, C, H, W)
             spatial_shape = (h, w)
             spatial_shapes.append(spatial_shape)
+            # (bs, C, H, W) => (bs, HW, C)
             src = src.flatten(2).transpose(1, 2)
-            mask = mask.flatten(1)
-            pos_embed = pos_embed.flatten(2).transpose(1, 2)
-            lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1)
-            lvl_pos_embed_flatten.append(lvl_pos_embed)
             src_flatten.append(src)
+            # (bs, H, W) => (bs, HW)
+            mask = mask.flatten(1)
             mask_flatten.append(mask)
+            '''
+            由于position embedding只区份 h,w 的位置
+            因此对于不同特征层由相同坐标值的特征点来说，是无法区分的，因此要加上scale level embedding
+            这样所有特征点的位置信息就各不相同了
+            '''
+            # (bs, C, H, W) => (bs, HW, C)
+            pos_embed = pos_embed.flatten(2).transpose(1, 2)
+            # self.level_embed (lvl, C) => [lvl](1, 1, C) 不同层加不同信息
+            lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1)
+            # (bs, HW, C)
+            lvl_pos_embed_flatten.append(lvl_pos_embed)
+            
+        # (bs, H1W1 + H2W2 + ... HlWl, C)    
         src_flatten = torch.cat(src_flatten, 1)
+        # (bs, H1W1 + H2W2 + ... HlWl)   
         mask_flatten = torch.cat(mask_flatten, 1)
+        # (bs, H1W1 + H2W2 + ... HlWl, C) 
         lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
+        # (lvl, 2)
         spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)
+        # .prod(dim=1) 是将dim1的各个元素相乘，这里得到各个特征层对应的特征点数 h*w
+        # .consum(dim=0) 表示在dim0进行累加，这样就会得到 h1w1 + ... + hl*wl
+        # .new_zeros 返回用 0 填充的大小为 size 的张量, 其可以方便的复制原来tensor的所有类型，比如数据类型和数据所在设备等等
+        # 因此这里得到的 level_start_index 是各特征层起始的index （这个索引对应到被flatten的维度）
+        # (1, ) cat (lvl-1, ) => (lvl, )
         level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
+        # (bs, lvl, 2) 各特征层中非padding部分的边长（高&宽）占特征图边长的比例
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
 
-        # encoder
+        # encoder   lvl_pos_embed_flatten 这个就是传入Encoder layer的的pos          mask_flatten就是传入Encoder layer的 mask
         memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
+
+
+
 
         # prepare input for decoder
         bs, _, c = memory.shape
@@ -193,7 +239,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
                  n_levels=4, n_heads=8, n_points=4):
         super().__init__()
 
-        # self attention
+        # self attention 注意这里用的是MSDeformAttn
         self.self_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points)
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
@@ -208,6 +254,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
 
     @staticmethod
     def with_pos_embed(tensor, pos):
+        # 只要有position embedding，就加上
         return tensor if pos is None else tensor + pos
 
     def forward_ffn(self, src):
@@ -217,7 +264,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
         return src
 
     def forward(self, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None):
-        # self attention
+        # self attention  这边的reference_points就是 (bs, hw*lvl, lvl, 2) 的
         src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
@@ -236,19 +283,31 @@ class DeformableTransformerEncoder(nn.Module):
 
     @staticmethod
     def get_reference_points(spatial_shapes, valid_ratios, device):
+        # valid_ratios (bs, lvl, 2) 各特征层中非padding部分的边长（高&宽）占特征图边长的比例
+        # spatial_shapes (lvl, 2) 各特征层的特征图尺寸
+        # 获得参照点
         reference_points_list = []
+        # 枚举每个 lvl 的尺寸
         for lvl, (H_, W_) in enumerate(spatial_shapes):
-
+            # 为当前 lvl 创建参照点网格， torch.linspace(a, b, c) 生成[a, b]的c个数构成的等差数列，这里生成 h*w个点
             ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
                                           torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
+            # 首先将ref_y压成一维(hw,) 然后变成 (1, hw)
+            # valid_ratios 取第lvl层，得到 (bs, 1) 最后做除法得到 (bs, hw)
             ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
             ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * W_)
+            # (bs, hw, 2)
             ref = torch.stack((ref_x, ref_y), -1)
             reference_points_list.append(ref)
+        # reference_points_list (lvl, bs, hw, 2) => reference_points(bs, hw*lvl, 2)
         reference_points = torch.cat(reference_points_list, 1)
+        # reference_points[:, :, None] (bs, hw*lvl, 1, 2)
+        # valid_ratios[:, None] (bs, 1, lvl, 2)
+        # 最终 reference_points (bs, hw*lvl, lvl, 2) 归一化到了 (0, 1) 之间 两个点是 (W, H)
         reference_points = reference_points[:, :, None] * valid_ratios[:, None]
         return reference_points
 
+    # 这里传进来的所有参数就是 Encoder准备工作得到的
     def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None):
         output = src
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
