@@ -39,12 +39,14 @@ class MSDeformAttn(nn.Module):
         super().__init__()
         if d_model % n_heads != 0:
             raise ValueError('d_model must be divisible by n_heads, but got {} and {}'.format(d_model, n_heads))
+        # 按照 d_model 切分成多个头
         _d_per_head = d_model // n_heads
         # you'd better set _d_per_head to a power of 2 which is more efficient in our CUDA implementation
         if not _is_power_of_2(_d_per_head):
             warnings.warn("You'd better set d_model in MSDeformAttn to make the dimension of each attention head a power of 2 "
                           "which is more efficient in our CUDA implementation.")
 
+        # 用于CUDA实现的一个参数
         self.im2col_step = 64
 
         self.d_model = d_model
@@ -52,6 +54,7 @@ class MSDeformAttn(nn.Module):
         self.n_heads = n_heads
         self.n_points = n_points
 
+        # 定义四个需要用到的线性层
         # 采样点的坐标偏移，每个query在每个注意力头和每个特征层都需要采样n_points个
         # 由于x、y坐标都有偏移，因此还要乘以2
         self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
@@ -70,18 +73,18 @@ class MSDeformAttn(nn.Module):
         '''
         # 该函数用val的值填充输入的张量或变量， 即初始化变量为0
         constant_(self.sampling_offsets.weight.data, 0.)
-
+        # 每个头对应着一个方向
         # (8, ) [0, 2pi / 8, 4pi / 8, ... , 14pi / 8]
         thetas = torch.arange(self.n_heads, dtype=torch.float32) * (2.0 * math.pi / self.n_heads)
-        # (8, 2) 
+        # (8, 2) 对8个方向每个方向取对应的余弦值和正弦值
         grid_init = torch.stack([thetas.cos(), thetas.sin()], -1)
         # grid_init / grid_init.abs().max(-1, keepdim=True)[0] 这一步计算得到 8 个头的对应坐标偏移
-        # (1, 0), (1, 1), (0, 1), (-1, 1), (1, 0), (-1, -1), (0, -1), (1, -1)
+        # (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)
         # 然后重复到所有特征层和采样点 (n_heads, n_levels, n_points, 2)
         grid_init = (grid_init / grid_init.abs().max(-1, keepdim=True)[0]).view(self.n_heads, 1, 1, 2).repeat(1, self.n_levels, self.n_points, 1)
 
-        # 同一特征层的采样点的坐标偏移肯定不能一样，因此这里做了处理
-        # 比如说第一个头每个层的采样点，就由
+        # 同一特征层的不同采样点的坐标偏移肯定不能一样，因此这里做了处理
+        # 比如说第一个头某个层的4个采样点，就由
         # (1, 0),(1, 0),(1, 0),(1, 0) 变成了 (1, 0),(2, 0),(3, 0),(4, 0) 
         # 从视觉上来看，形成的偏移位置相当于是 3x3、5x5、7x7、9x9的正方形卷积核（除去中心，中心是参考点本身）
         for i in range(self.n_points):
@@ -94,7 +97,7 @@ class MSDeformAttn(nn.Module):
         # 按照论文描述，应该是
         # constant_(self.attention_weights.bias.data, 1. / (self.n_levels * self.n_points))
 
-        # 用一个均匀分布生成值，填充输入的张量或变量 结果张量中的值采样自 U(-a, a)
+        # xavier_uniform_: 用一个均匀分布生成值，填充输入的张量或变量 结果张量中的值采样自 U(-a, a)
         xavier_uniform_(self.value_proj.weight.data)
         constant_(self.value_proj.bias.data, 0.)
         xavier_uniform_(self.output_proj.weight.data)
@@ -102,13 +105,18 @@ class MSDeformAttn(nn.Module):
 
     def forward(self, query, reference_points, input_flatten, input_spatial_shapes, input_level_start_index, input_padding_mask=None):
         """
-        :param query                       (N, Length_{query}, C)  N是批次大小, Length_{query}是query的个数
-        :param reference_points            (N, Length_{query}, n_levels, 2), range in [0, 1], top-left (0,0), bottom-right (1, 1), including padding area
-         (bs, hw*lvl, lvl, 2)              or (N, Length_{query}, n_levels, 4), add additional (w, h) to form reference boxes
+        :param query                       (N, Length_{query}, C)  N是批次大小, Length_{query}是query的个数, query事实上就是加上了 pos_embed 的 input_flatten 
 
-        :param input_flatten               (N, \sum_{l=0}^{L-1} H_l \cdot W_l, C)
+        :param reference_points            (N, Length_{query}, n_levels, 2), range in [0, 1], top-left (0,0), bottom-right (1, 1), including padding area
+         (bs, hw*lvl, lvl, 2)              or (N, Length_{query}, n_levels, 4), add additional (w, h) to form reference boxes  代表参照点的位置
+
+        :param input_flatten               (N, \sum_{l=0}^{L-1} H_l \cdot W_l, C)  形状和 query 一样，说明  Length_{query} = \sum_{l=0}^{L-1} H_l \cdot W_l
+
         :param input_spatial_shapes        (n_levels, 2), [(H_0, W_0), (H_1, W_1), ..., (H_{L-1}, W_{L-1})]     每个特征图的尺寸
+
         :param input_level_start_index     (n_levels, ), [0, H_0*W_0, H_0*W_0+H_1*W_1, H_0*W_0+H_1*W_1+H_2*W_2, ..., H_0*W_0+H_1*W_1+...+H_{L-1}*W_{L-1}]
+                                            是input_flatten中各特征层起始的index （这个索引对应到被flatten的维度）
+
         :param input_padding_mask          (N, \sum_{l=0}^{L-1} H_l \cdot W_l), True for padding elements, False for non-padding elements
 
         :return output                     (N, Length_{query}, C)
@@ -119,7 +127,7 @@ class MSDeformAttn(nn.Module):
                 通过变换矩阵得到 value, 同时将padding部分用0填充
             2) 将query (object query)
                 (
-                    对于encoder就是特征图本身加上position & scale-level embedding; 
+                    对于encoder就是 特征图本身加上position & scale-level embedding; 
                     对于decoder就是 self-attention的输出加上position embedding;
                     2-stage时这个 position embedding是由encoder预测的top-k proposal boxes进行position embedding得来;
                     而1-stage是由预设的的embedding
@@ -139,7 +147,7 @@ class MSDeformAttn(nn.Module):
         # 判断所有特征层的点数之和是否为 Len_in
         assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1]).sum() == Len_in
 
-        # (N, Len_in, d_model)
+        # (N, Len_in, d_model)   将input_flatten经过线性层投影得到 value
         value = self.value_proj(input_flatten)
         if input_padding_mask is not None:
             # 将原图padding部分用0填充

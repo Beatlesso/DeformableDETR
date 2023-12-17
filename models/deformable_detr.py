@@ -54,8 +54,10 @@ class DeformableDETR(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.num_feature_levels = num_feature_levels
-        if not two_stage:
+        if not two_stage: 
+            # query_embed 是一个包含 num_queries 个 hidden_dim*2 大小张量的查找表
             self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
+        # 如果是多尺度
         if num_feature_levels > 1:
             num_backbone_outs = len(backbone.strides)
             input_proj_list = []
@@ -63,16 +65,18 @@ class DeformableDETR(nn.Module):
                 in_channels = backbone.num_channels[_]
                 input_proj_list.append(nn.Sequential(
                     nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                    # 将输入通道分32个组的，张量的通道数 hidden_dim
                     nn.GroupNorm(32, hidden_dim),
                 ))
             for _ in range(num_feature_levels - num_backbone_outs):
                 input_proj_list.append(nn.Sequential(
                     nn.Conv2d(in_channels, hidden_dim, kernel_size=3, stride=2, padding=1),
+                    # 将输入通道分32个组的，张量的通道数 hidden_dim
                     nn.GroupNorm(32, hidden_dim),
                 ))
                 in_channels = hidden_dim
             self.input_proj = nn.ModuleList(input_proj_list)
-        else:
+        else: # 单尺度
             self.input_proj = nn.ModuleList([
                 nn.Sequential(
                     nn.Conv2d(backbone.num_channels[0], hidden_dim, kernel_size=1),
@@ -128,32 +132,47 @@ class DeformableDETR(nn.Module):
         """
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
+        # pos 是 position encoding
         features, pos = self.backbone(samples)
 
         srcs = []
         masks = []
+        # l是列表下标，feat是特征图
         for l, feat in enumerate(features):
+            # 对每一个特征feat这个NestedTensor进行分解，得到src和mask
             src, mask = feat.decompose()
+            # 使用与当前层级 l 对应的投影层处理src，并将结果添加到srcs列表
             srcs.append(self.input_proj[l](src))
             masks.append(mask)
             assert mask is not None
+        
+        # 检查特征图层级数是否够 num_feature_levels 的数目，如果不够，进行处理
         if self.num_feature_levels > len(srcs):
             _len_srcs = len(srcs)
+            # 补全缺少的 (num_feature_levels - len_srcs) 个特征图层级
             for l in range(_len_srcs, self.num_feature_levels):
+                # 如果它是第一个缺少的层级，直接从上一个已知的特征中获取；否则，从上一个添加的源数据srcs中获取。
                 if l == _len_srcs:
                     src = self.input_proj[l](features[-1].tensors)
                 else:
                     src = self.input_proj[l](srcs[-1])
+                # 获取输入样例的mask
                 m = samples.mask
+                # 使用插值方法调整mask的大小以匹配src
                 mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+                # 获得相应的 position encoding
                 pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
                 srcs.append(src)
                 masks.append(mask)
                 pos.append(pos_l)
 
         query_embeds = None
+        # 如果不是双阶段模式，
         if not self.two_stage:
+            # 取查找表中的元素用于填充 query_embeds
             query_embeds = self.query_embed.weight
+        
+
         hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact = self.transformer(srcs, masks, pos, query_embeds)
 
         outputs_classes = []
@@ -447,8 +466,10 @@ def build(args):
         num_classes = 250
     device = torch.device(args.device)
 
+    # 创建骨干网
     backbone = build_backbone(args)
 
+    # 创建Deformable Transformer
     transformer = build_deforamble_transformer(args)
     model = DeformableDETR(
         backbone,

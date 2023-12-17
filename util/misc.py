@@ -22,7 +22,7 @@ from typing import Optional, List
 
 import torch
 import torch.nn as nn
-import torch.distributed as dist
+import torch.distributed as dist   # 用于单机多卡
 from torch import Tensor
 
 # needed due to empty tensor bug in pytorch and torchvision 0.5
@@ -335,7 +335,7 @@ def nested_tensor_from_tensor_list(tensor_list: List[Tensor]):
         raise ValueError('not supported')
     return NestedTensor(tensor, mask)
 
-
+# 实质就是将张量与对应的mask封装到一起
 class NestedTensor(object):
     def __init__(self, tensors, mask: Optional[Tensor]):
         self.tensors = tensors
@@ -380,9 +380,9 @@ def setup_for_distributed(is_master):
 
 
 def is_dist_avail_and_initialized():
-    if not dist.is_available():
+    if not dist.is_available():     # 检查分布式是否可用
         return False
-    if not dist.is_initialized():
+    if not dist.is_initialized():  # 检查默认进程组是否已初始化
         return False
     return True
 
@@ -394,6 +394,7 @@ def get_world_size():
 
 
 def get_rank():
+    # 如果分布式不可用，反回0，否则反回当前进程在提供的组中的排名，如果没有提供，则返回默认组。
     if not is_dist_avail_and_initialized():
         return 0
     return dist.get_rank()
@@ -411,6 +412,7 @@ def get_local_rank():
     return int(os.environ['LOCAL_RANK'])
 
 
+# 判断是否为单卡
 def is_main_process():
     return get_rank() == 0
 

@@ -31,20 +31,30 @@ class DeformableTransformer(nn.Module):
         self.d_model = d_model
         self.nhead = nhead
         self.two_stage = two_stage
+        # 双阶段建议区域数
         self.two_stage_num_proposals = two_stage_num_proposals
 
+        # 创建编码层
         encoder_layer = DeformableTransformerEncoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
                                                           num_feature_levels, nhead, enc_n_points)
+        # 将若干个编码层组合成编码器
         self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers)
 
+        # 创建解码层
         decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
                                                           num_feature_levels, nhead, dec_n_points)
+        # 将若干个解码层组合成解码器
         self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
 
+        # level_embed
+        # 对每个特征层增加一个 d_model 维的embedding
+        # 目的是为了区分 拥相同的(h,w)坐标但位于不同特征层的特征点
+        # 随机初始化并且是随网络一起训练的、可学习的
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
 
+        # 判断是否为双阶段的模式，单阶段和双阶段模式有些差别
         if two_stage:
             self.enc_output = nn.Linear(d_model, d_model)
             self.enc_output_norm = nn.LayerNorm(d_model)
@@ -55,18 +65,21 @@ class DeformableTransformer(nn.Module):
 
         self._reset_parameters()
 
+    # 用于初始化参数
     def _reset_parameters(self):
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
-        for m in self.modules():
+        for m in self.modules(): # modules()会递归地遍历所有子模块
             if isinstance(m, MSDeformAttn):
                 m._reset_parameters()
         if not self.two_stage:
             xavier_uniform_(self.reference_points.weight.data, gain=1.0)
             constant_(self.reference_points.bias.data, 0.)
+        # 随机初始化 level_embed
         normal_(self.level_embed)
 
+    # 
     def get_proposal_pos_embed(self, proposals):
         num_pos_feats = 128
         temperature = 10000
@@ -82,6 +95,7 @@ class DeformableTransformer(nn.Module):
         pos = torch.stack((pos[:, :, :, 0::2].sin(), pos[:, :, :, 1::2].cos()), dim=4).flatten(2)
         return pos
 
+    # 
     def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
         N_, S_, C_ = memory.shape
         base_scale = 4.0
@@ -114,6 +128,7 @@ class DeformableTransformer(nn.Module):
         output_memory = self.enc_output_norm(self.enc_output(output_memory))
         return output_memory, output_proposals
 
+    # 
     def get_valid_ratio(self, mask):
         _, H, W = mask.shape
         # (bs, H) 在dim1上求sum => (bs,)
@@ -170,7 +185,9 @@ class DeformableTransformer(nn.Module):
             '''
             # (bs, C, H, W) => (bs, HW, C)
             pos_embed = pos_embed.flatten(2).transpose(1, 2)
-            # self.level_embed (lvl, C) => [lvl](1, 1, C) 不同层加不同信息
+
+            # self.level_embed (lvl, C) => [lvl](1, 1, C) 
+            # 即在实际使用的时候，每个lvl加相同的level_embed，不同lvl加不同level_embed
             lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1)
             # (bs, HW, C)
             lvl_pos_embed_flatten.append(lvl_pos_embed)
@@ -239,7 +256,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
                  n_levels=4, n_heads=8, n_points=4):
         super().__init__()
 
-        # self attention 注意这里用的是MSDeformAttn
+        # self_attention 注意这里用的是MSDeformAttn
         self.self_attn = MSDeformAttn(d_model, n_levels, n_heads, n_points)
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
@@ -278,6 +295,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
 class DeformableTransformerEncoder(nn.Module):
     def __init__(self, encoder_layer, num_layers):
         super().__init__()
+        # 深度拷贝num_layers份encoder_layer，生成ModuleList
         self.layers = _get_clones(encoder_layer, num_layers)
         self.num_layers = num_layers
 
@@ -307,9 +325,10 @@ class DeformableTransformerEncoder(nn.Module):
         reference_points = reference_points[:, :, None] * valid_ratios[:, None]
         return reference_points
 
-    # 这里传进来的所有参数就是 Encoder准备工作得到的
+    # 这里传进来的所有参数就是 Encoder准备工作得到的，然后一层一层前向传播即可
     def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None):
         output = src
+        # 获取参照点
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
         for _, layer in enumerate(self.layers):
             output = layer(output, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
@@ -419,6 +438,7 @@ class DeformableTransformerDecoder(nn.Module):
         return output, reference_points
 
 
+# 深度拷贝原始 module 并生成 ModuleList
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
@@ -434,6 +454,7 @@ def _get_activation_fn(activation):
     raise RuntimeError(F"activation should be relu/gelu, not {activation}.")
 
 
+# 解系给定参数构建DeformableTransformer
 def build_deforamble_transformer(args):
     return DeformableTransformer(
         d_model=args.hidden_dim,

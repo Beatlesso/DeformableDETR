@@ -23,6 +23,8 @@ import util.misc as utils
 import datasets.samplers as samplers
 from datasets import build_dataset, get_coco_api_from_dataset
 from engine import evaluate, train_one_epoch
+
+# build_model 在 models的 __init__.py 中，真正的build在deformable_detr.py中
 from models import build_model
 
 
@@ -81,7 +83,7 @@ def get_args_parser():
     parser.add_argument('--dec_n_points', default=4, type=int)
     parser.add_argument('--enc_n_points', default=4, type=int)
 
-    # * Segmentation
+    # * Segmentation   是store_const的特例，用于创建默认值 true
     parser.add_argument('--masks', action='store_true',
                         help="Train segmentation head if the flag is provided")
 
@@ -133,6 +135,8 @@ def main(args):
     if args.frozen_weights is not None:
         assert args.masks, "Frozen training is meant for segmentation only"
     print(args)
+
+    # return
 
     device = torch.device(args.device)
 
