@@ -19,6 +19,7 @@ import torch.nn.functional as F
 from torch.nn.init import xavier_uniform_, constant_
 
 from ..functions import MSDeformAttnFunction
+from ..functions import PyTorchDeformAttnFunction
 
 
 def _is_power_of_2(n):
@@ -185,8 +186,24 @@ class MSDeformAttn(nn.Module):
         # 根据采样点位置拿出对应的value, 并且施加预测出来的注意力权重 (和value进行weighted sum)
         # (N, Len_in, C)
         # 注: 实际调用的是基于CUDA实现的版本, 需要编译
+
+        print("value: " + str(value.shape))
+        print("input_spatial_shapes: " + str(input_spatial_shapes.shape))
+        print("all_input_spatial_shapes: " + str(input_spatial_shapes))
+        print("input_level_start_index: " + str(input_level_start_index.shape))
+        print("all_input_level_start_index: " + str(input_level_start_index))
+        print("sampling_locations: " + str(sampling_locations.shape))
+        print("attention_weights: " + str(attention_weights.shape))
+        print("self.im2col_step: " + str(self.im2col_step))
+
         output = MSDeformAttnFunction.apply(
             value, input_spatial_shapes, input_level_start_index, sampling_locations, attention_weights, self.im2col_step)
+
+
+        # pytorch 版本调用
+        # output = PyTorchDeformAttnFunction.apply(
+        #     value, input_spatial_shapes, input_level_start_index, sampling_locations, attention_weights, self.im2col_step)
+
         # (N, Len_in, C)
         output = self.output_proj(output)
         return output

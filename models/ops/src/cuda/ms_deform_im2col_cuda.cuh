@@ -30,6 +30,7 @@ inline int GET_BLOCKS(const int N, const int num_threads)
 }
 
 
+// 第三个调用这里
 template <typename scalar_t>
 __device__ scalar_t ms_deform_attn_im2col_bilinear(const scalar_t* &bottom_data, 
                                                    const int &height, const int &width, const int &nheads, const int &channels,
@@ -84,6 +85,7 @@ __device__ scalar_t ms_deform_attn_im2col_bilinear(const scalar_t* &bottom_data,
 }
 
 
+// 逆操作 col2im ？
 template <typename scalar_t>
 __device__ void ms_deform_attn_col2im_bilinear(const scalar_t* &bottom_data, 
                                                    const int &height, const int &width, const int &nheads, const int &channels,
@@ -234,6 +236,7 @@ __device__ void ms_deform_attn_col2im_bilinear_gm(const scalar_t* &bottom_data,
 }
 
 
+// 第二个调用这里
 template <typename scalar_t>
 __global__ void ms_deformable_im2col_gpu_kernel(const int n,
                                                 const scalar_t *data_value, 
@@ -920,6 +923,10 @@ __global__ void ms_deformable_col2im_gpu_kernel_gm(const int n,
 }
 
 
+
+// template 关键字告诉C++编译器 下面是个泛型模板  
+// 数据类型T 参数化数据类型
+// 第一个调用的就是这个函数
 template <typename scalar_t>
 void ms_deformable_im2col_cuda(cudaStream_t stream,
                               const scalar_t* data_value,
@@ -936,12 +943,12 @@ void ms_deformable_im2col_cuda(cudaStream_t stream,
                               const int num_point,
                               scalar_t* data_col)
 {
+  // 
   const int num_kernels = batch_size * num_query * num_heads * channels;
   const int num_actual_kernels = batch_size * num_query * num_heads * channels;
-  const int num_threads = CUDA_NUM_THREADS;
+  const int num_threads = CUDA_NUM_THREADS; // 宏变量 1024
   ms_deformable_im2col_gpu_kernel<scalar_t>
-      <<<GET_BLOCKS(num_actual_kernels, num_threads), num_threads,
-          0, stream>>>(
+      <<<GET_BLOCKS(num_actual_kernels, num_threads), num_threads, 0, stream>>>(
       num_kernels, data_value, data_spatial_shapes, data_level_start_index, data_sampling_loc, data_attn_weight, 
       batch_size, spatial_size, num_heads, channels, num_levels, num_query, num_point, data_col);
   
