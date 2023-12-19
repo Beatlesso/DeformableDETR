@@ -61,11 +61,14 @@ at::Tensor ms_deform_attn_cuda_forward(
     const int batch_n = im2col_step_;
 
     auto output_n = output.view({batch/im2col_step_, batch_n, num_query, num_heads, channels});
-    // per_value_size 表示所有特征图的 元素总数：spatial_size * d_model
+
+
+    /* 下面的内容都是为了方便计算地址偏移而计算的 */
+    // per_value_size 表示  一个样例  所有特征图的 元素总数：spatial_size * d_model
     auto per_value_size = spatial_size * num_heads * channels;
-    // per_sample_loc_size 表示所有采样点坐标的 元素总数
+    // per_sample_loc_size 表示  一个样例  所有采样点坐标的 元素总数
     auto per_sample_loc_size = num_query * num_heads * num_levels * num_point * 2;
-    // per_attn_weight_size 表示所有采样点注意力权重的 元素总数
+    // per_attn_weight_size 表示  一个样例  所有采样点注意力权重的 元素总数
     auto per_attn_weight_size = num_query * num_heads * num_levels * num_point;
 
 

@@ -238,7 +238,7 @@ __device__ void ms_deform_attn_col2im_bilinear_gm(const scalar_t* &bottom_data,
 
 // 第二个调用这里
 template <typename scalar_t>
-__global__ void ms_deformable_im2col_gpu_kernel(const int n,
+__global__ void ms_deformable_im2col_gpu_kernel(const int n,    // n 是 batch_size * num_query * num_heads * channels
                                                 const scalar_t *data_value, 
                                                 const int64_t *data_spatial_shapes,
                                                 const int64_t *data_level_start_index, 
@@ -253,11 +253,21 @@ __global__ void ms_deformable_im2col_gpu_kernel(const int n,
                                                 const int num_point,
                                                 scalar_t *data_col)
 {
+  // 宏定义 自动生成一个循环，该循环会遍历所有索引，从 0 到 n-1
   CUDA_KERNEL_LOOP(index, n)
   {
+    /*
+        这里相当于 n 是一个多位不同进制数
+        c_col 表示当前是第几个channels
+        m_col 表示当前是第几个头部
+        q_col 表示当前是第几个query
+        b_col 表示当前是小批次里的第几个样例
+
+        sampling_index 就是 b_col * q_col * m_col
+    */
     int _temp = index;
     const int c_col = _temp % channels;
-    _temp /= channels;
+    _temp /= channels; 
     const int sampling_index = _temp; 
     const int m_col = _temp % num_heads;
     _temp /= num_heads;
@@ -265,7 +275,15 @@ __global__ void ms_deformable_im2col_gpu_kernel(const int n,
     _temp /= num_query;
     const int b_col = _temp;
 
+    // 要处理的输出的指针就是 data_col + index
     scalar_t *data_col_ptr = data_col + index;
+    /*
+        类似可以获取其它需要的下标
+        data_weight_ptr 就是 b_col * q_col * m_col * num_levels * num_point，即我们要处理的weight的起始下标
+        data_loc_w_ptr，因为采样点坐标有两个数组成，所以下标对应乘2
+        qid_stride 就是相对于 index来说，切换一个q的index步长
+        data_value_ptr_init_offset 
+    */
     int data_weight_ptr = sampling_index * num_levels * num_point;
     int data_loc_w_ptr = data_weight_ptr << 1;
     const int qid_stride = num_heads * channels;
@@ -941,9 +959,9 @@ void ms_deformable_im2col_cuda(cudaStream_t stream,
                               const int num_levels, 
                               const int num_query,
                               const int num_point,
-                              scalar_t* data_col)
+                              scalar_t* data_col)  // data_col用来存储当前处理内容的输出
 {
-  // 
+  // num_kernels 求的是当前要处理的data_value一共有多少元素
   const int num_kernels = batch_size * num_query * num_heads * channels;
   const int num_actual_kernels = batch_size * num_query * num_heads * channels;
   const int num_threads = CUDA_NUM_THREADS; // 宏变量 1024
