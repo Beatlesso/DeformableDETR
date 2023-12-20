@@ -55,12 +55,11 @@ with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_sh
     out1 = MSDeformAttnFunction.apply(value, input_spatial_shapes, input_level_start_index, sampling_locations, attention_weights, im2col_step)
 
 
-print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
-
-# prof.export_chrome_trace("trace.json")
-# prof.export_stacks("./profiler/MSDeformAttn_profiler_stacks.txt", "self_cuda_time_total")
+# print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+# prof.export_chrome_trace("MSDeformAttnFunction.json")
 
 
+prof.export_stacks("profiler_stacks.txt", "self_cuda_time_total")
 
 
 print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
@@ -72,8 +71,9 @@ with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_sh
     out2 = PyTorchDeformAttnFunction.apply(value, input_spatial_shapes, input_level_start_index, sampling_locations, attention_weights, im2col_step)
 
 
-print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
-# print(prof.key_averages(group_by_stack_n=5).table(sort_by="self_cuda_time_total", row_limit=10))
+# print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=100))
+# prof.export_chrome_trace("PyTorchDeformAttnFunction.json")
+
 
 
 

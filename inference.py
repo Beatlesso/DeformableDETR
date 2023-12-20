@@ -137,7 +137,6 @@ def main():
         cn+=1
         waste+=waste_time
         waste_avg = waste/cn
-        break
     print("总计用时：%.6fs" % waste)
 
  

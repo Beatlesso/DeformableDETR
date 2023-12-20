@@ -187,14 +187,14 @@ class MSDeformAttn(nn.Module):
         # (N, Len_in, C)
         # 注: 实际调用的是基于CUDA实现的版本, 需要编译
 
-        print("value: " + str(value.shape))
-        print("input_spatial_shapes: " + str(input_spatial_shapes.shape))
-        print("all_input_spatial_shapes: " + str(input_spatial_shapes))
-        print("input_level_start_index: " + str(input_level_start_index.shape))
-        print("all_input_level_start_index: " + str(input_level_start_index))
-        print("sampling_locations: " + str(sampling_locations.shape))
-        print("attention_weights: " + str(attention_weights.shape))
-        print("self.im2col_step: " + str(self.im2col_step))
+        # print("value: " + str(value.shape))
+        # print("input_spatial_shapes: " + str(input_spatial_shapes.shape))
+        # print("all_input_spatial_shapes: " + str(input_spatial_shapes))
+        # print("input_level_start_index: " + str(input_level_start_index.shape))
+        # print("all_input_level_start_index: " + str(input_level_start_index))
+        # print("sampling_locations: " + str(sampling_locations.shape))
+        # print("attention_weights: " + str(attention_weights.shape))
+        # print("self.im2col_step: " + str(self.im2col_step))
 
         output = MSDeformAttnFunction.apply(
             value, input_spatial_shapes, input_level_start_index, sampling_locations, attention_weights, self.im2col_step)
