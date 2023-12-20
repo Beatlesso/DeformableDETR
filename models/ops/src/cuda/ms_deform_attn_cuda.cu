@@ -57,6 +57,8 @@ at::Tensor ms_deform_attn_cuda_forward(
     AT_ASSERTM(batch % im2col_step_ == 0, "batch(%d) must divide im2col_step(%d)", batch, im2col_step_);
     // 创建输出对应的 0 张量，options 用于指定新张量的数据类型和其他选项，这通常与 value 张量具有相同的数据类型和设备
     auto output = at::zeros({batch, num_query, num_heads, channels}, value.options());
+
+
     // 注意 batch_n 是 im2col_step_
     const int batch_n = im2col_step_;
 
@@ -105,6 +107,7 @@ at::Tensor ms_deform_attn_cuda_forward(
                 // 该数据是一个一维的连续存储的地址，访问数据的方式和c语言指针使用方法一样
                 // 每次都处理 im2col_step_，所以第n次的地址偏移就是 n * im2col_step_ * per_value_size，后面的类似
                 value.data<scalar_t>() + n * im2col_step_ * per_value_size,
+                // 这两个不需要偏移，是通用的
                 spatial_shapes.data<int64_t>(),
                 level_start_index.data<int64_t>(),
                 sampling_loc.data<scalar_t>() + n * im2col_step_ * per_sample_loc_size,
@@ -121,6 +124,7 @@ at::Tensor ms_deform_attn_cuda_forward(
 }
 
 
+// 此处多一个 grad_output
 std::vector<at::Tensor> ms_deform_attn_cuda_backward(
     const at::Tensor &value, 
     const at::Tensor &spatial_shapes,
@@ -130,7 +134,7 @@ std::vector<at::Tensor> ms_deform_attn_cuda_backward(
     const at::Tensor &grad_output,
     const int im2col_step)
 {
-
+    // 检测张量是否内存连续以及是否在cuda上
     AT_ASSERTM(value.is_contiguous(), "value tensor has to be contiguous");
     AT_ASSERTM(spatial_shapes.is_contiguous(), "spatial_shapes tensor has to be contiguous");
     AT_ASSERTM(level_start_index.is_contiguous(), "level_start_index tensor has to be contiguous");
@@ -145,6 +149,7 @@ std::vector<at::Tensor> ms_deform_attn_cuda_backward(
     AT_ASSERTM(attn_weight.type().is_cuda(), "attn_weight must be a CUDA tensor");
     AT_ASSERTM(grad_output.type().is_cuda(), "grad_output must be a CUDA tensor");
 
+    // 获取对应属性信息
     const int batch = value.size(0);
     const int spatial_size = value.size(1);
     const int num_heads = value.size(2);
@@ -156,22 +161,27 @@ std::vector<at::Tensor> ms_deform_attn_cuda_backward(
     const int num_point = sampling_loc.size(4);
 
     const int im2col_step_ = std::min(batch, im2col_step);
-
+    // batch 必需是 im2col_step_ 的倍数
     AT_ASSERTM(batch % im2col_step_ == 0, "batch(%d) must divide im2col_step(%d)", batch, im2col_step_);
-
+    // 三个要求的梯度和对应的输入形状一样，初始化为0
     auto grad_value = at::zeros_like(value);
     auto grad_sampling_loc = at::zeros_like(sampling_loc);
     auto grad_attn_weight = at::zeros_like(attn_weight);
 
+    // 相当于micro batch处理
     const int batch_n = im2col_step_;
+    // 即 spatial_size * d_model, 类似forward
     auto per_value_size = spatial_size * num_heads * channels;
     auto per_sample_loc_size = num_query * num_heads * num_levels * num_point * 2;
     auto per_attn_weight_size = num_query * num_heads * num_levels * num_point;
+    // grad_output_n 格式化为 batch_n处理的形式
     auto grad_output_n = grad_output.view({batch/im2col_step_, batch_n, num_query, num_heads, channels});
-    
+    // 每次处理一个微批次
     for (int n = 0; n < batch/im2col_step_; ++n)
     {
+        // 取出对应要处理的 grad_output_n
         auto grad_output_g = grad_output_n.select(0, n);
+        // 动态分发调用核函数, 地址偏移类似forward
         AT_DISPATCH_FLOATING_TYPES(value.type(), "ms_deform_attn_backward_cuda", ([&] {
             ms_deformable_col2im_cuda(at::cuda::getCurrentCUDAStream(),
                                     grad_output_g.data<scalar_t>(),
@@ -188,6 +198,7 @@ std::vector<at::Tensor> ms_deform_attn_cuda_backward(
         }));
     }
 
+    // 反回是 value, sampling_loc, attn_weight 的导数
     return {
         grad_value, grad_sampling_loc, grad_attn_weight
     };

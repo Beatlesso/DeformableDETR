@@ -1,0 +1,10 @@
+# ninja log v5
+0	8296	1702974104273556449	/home/luoyicong/DeformableDETR/models/ops/build/temp.linux-x86_64-cpython-310/home/luoyicong/DeformableDETR/models/ops/src/cpu/ms_deform_attn_cpu.o	c2a61a37328932f9
+1	21107	1702974117009487163	/home/luoyicong/DeformableDETR/models/ops/build/temp.linux-x86_64-cpython-310/home/luoyicong/DeformableDETR/models/ops/src/cuda/ms_deform_attn_cuda.o	7fcda6059a8db496
+1	24343	1702974120285469432	/home/luoyicong/DeformableDETR/models/ops/build/temp.linux-x86_64-cpython-310/home/luoyicong/DeformableDETR/models/ops/src/vision.o	413cff6728f4b78e
+75	11954	1702994257103965565	/home/luoyicong/DeformableDETR/models/ops/build/temp.linux-x86_64-cpython-310/home/luoyicong/DeformableDETR/models/ops/src/cpu/ms_deform_attn_cpu.o	673ae84034a31eb4
+75	20488	1702994269351955368	/home/luoyicong/DeformableDETR/models/ops/build/temp.linux-x86_64-cpython-310/home/luoyicong/DeformableDETR/models/ops/src/cuda/ms_deform_attn_cuda.o	8ce6815a35e083c8
+76	24759	1702994273659951890	/home/luoyicong/DeformableDETR/models/ops/build/temp.linux-x86_64-cpython-310/home/luoyicong/DeformableDETR/models/ops/src/vision.o	1ccd2ee431159837
+30	20319	1702994352779897292	/home/luoyicong/DeformableDETR/models/ops/build/temp.linux-x86_64-cpython-310/home/luoyicong/DeformableDETR/models/ops/src/cuda/ms_deform_attn_cuda.o	8ce6815a35e083c8
+30	19253	1702994460867847959	/home/luoyicong/DeformableDETR/models/ops/build/temp.linux-x86_64-cpython-310/home/luoyicong/DeformableDETR/models/ops/src/cuda/ms_deform_attn_cuda.o	8ce6815a35e083c8
+31	18347	1702994565395823190	/home/luoyicong/DeformableDETR/models/ops/build/temp.linux-x86_64-cpython-310/home/luoyicong/DeformableDETR/models/ops/src/cuda/ms_deform_attn_cuda.o	8ce6815a35e083c8
