@@ -106,6 +106,7 @@ class MSDeformAttnFunction(Function):
 #         '''
 #             性能测试代码
 #         '''
+    
 #         # (bch, Len_q, hidden_dim)
 #         return output.transpose(1, 2).contiguous()
 
@@ -119,45 +120,52 @@ class PyTorchDeformAttnFunction(Function):
         start1 = time.time()
         starter1, ender1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         starter1.record()
+        # ~~~~~~~~~~~~~~~
         bch, Len_in, n_heads, D_ = value.shape
         _, Len_q, n_heads, n_levels, n_points, _ = sampling_locations.shape
         value_list = value.split([H_ * W_ for H_, W_ in value_spatial_shapes], dim=1)
         sampling_grids = 2 * sampling_locations - 1
         sampling_value_list = []
+        # ~~~~~~~~~~~~~~~
         torch.cuda.synchronize()
         ender1.record()
         end1 = time.time()
 
 
-
         start2 = time.time()
         starter2, ender2 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         starter2.record()
+        # ~~~~~~~~~~~~~~~
         for lid_, (H_, W_) in enumerate(value_spatial_shapes):
             value_l_ = value_list[lid_].flatten(2).transpose(1, 2).reshape(bch*n_heads, D_, H_, W_)
             sampling_grid_l_ = sampling_grids[:, :, :, lid_].transpose(1, 2).flatten(0, 1)
             sampling_value_l_ = F.grid_sample(value_l_, sampling_grid_l_, mode='bilinear', padding_mode='zeros', align_corners=False)
             sampling_value_list.append(sampling_value_l_)
+        # ~~~~~~~~~~~~~~~
         torch.cuda.synchronize()
         ender2.record()
         end2 = time.time()
 
 
+
         start3 = time.time()
         starter3, ender3 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         starter3.record()
+        # ~~~~~~~~~~~~~~~
         attention_weights = attention_weights.transpose(1, 2).reshape(bch*n_heads, 1, Len_q, n_levels*n_points)
+        # ~~~~~~~~~~~~~~~
         torch.cuda.synchronize()
         ender3.record()
         end3 = time.time()
 
 
 
-
         start4 = time.time()
         starter4, ender4 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         starter4.record()
+        # ~~~~~~~~~~~~~~~
         output = torch.stack(sampling_value_list, dim=-2).flatten(-2)
+        # ~~~~~~~~~~~~~~~
         torch.cuda.synchronize()
         ender4.record()
         end4 = time.time()      
@@ -167,27 +175,32 @@ class PyTorchDeformAttnFunction(Function):
         start5 = time.time()
         starter5, ender5 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         starter5.record()
+        # ~~~~~~~~~~~~~~~
         output = output * attention_weights
+        # ~~~~~~~~~~~~~~~
         torch.cuda.synchronize()
         ender5.record()
         end5 = time.time()
 
 
+
         start6 = time.time()
         starter6, ender6 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         starter6.record()
+
         output = output.sum(-1).view(bch, n_heads*D_, Len_q)
+
         torch.cuda.synchronize()
         ender6.record()
         end6 = time.time()
 
 
-        print('Running time 1 : %s Seconds'%(end1-start1))
-        print('Running time 2 : %s Seconds'%(end2-start2))
-        print('Running time 3 : %s Seconds'%(end3-start3))
-        print('Running time 4 : %s Seconds'%(end4-start4))
-        print('Running time 5 : %s Seconds'%(end5-start5))
-        print('Running time 6 : %s Seconds'%(end6-start6))
+        # print('Running time 1 : %s Seconds'%(end1-start1))
+        # print('Running time 2 : %s Seconds'%(end2-start2))
+        # print('Running time 3 : %s Seconds'%(end3-start3))
+        # print('Running time 4 : %s Seconds'%(end4-start4))
+        # print('Running time 5 : %s Seconds'%(end5-start5))
+        # print('Running time 6 : %s Seconds'%(end6-start6))
 
         print('Running time 1 : %s ms'%(starter1.elapsed_time(ender1)))
         print('Running time 2 : %s ms'%(starter2.elapsed_time(ender2)))

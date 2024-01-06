@@ -79,7 +79,7 @@ class DeformableTransformer(nn.Module):
         # 随机初始化 level_embed
         normal_(self.level_embed)
 
-    # 
+    # 获取proposal位置编码
     def get_proposal_pos_embed(self, proposals):
         num_pos_feats = 128
         temperature = 10000
@@ -95,36 +95,54 @@ class DeformableTransformer(nn.Module):
         pos = torch.stack((pos[:, :, :, 0::2].sin(), pos[:, :, :, 1::2].cos()), dim=4).flatten(2)
         return pos
 
-    # 
+    # 用Encoder的输出（memory）来得到proposals
     def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
         N_, S_, C_ = memory.shape
         base_scale = 4.0
         proposals = []
         _cur = 0
+        # 计算每个尺寸的特征图上的proposal
         for lvl, (H_, W_) in enumerate(spatial_shapes):
+            # 取出当前特征图的mask，并且view成  (N_, H_, W_, 1)  的形状
             mask_flatten_ = memory_padding_mask[:, _cur:(_cur + H_ * W_)].view(N_, H_, W_, 1)
+            # 计算每个样本上非padding的行和列数
             valid_H = torch.sum(~mask_flatten_[:, :, 0, 0], 1)
             valid_W = torch.sum(~mask_flatten_[:, 0, :, 0], 1)
-
+            # 生成两个网格，分别看作行和列，在另一个的维度上进行广播复制，得到两个 (H, W)大小的网格
             grid_y, grid_x = torch.meshgrid(torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
                                             torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device))
+            # 将两个网格扩展出第三个维度 (H, W, 1)，并在第三个维度上cat (H, W, 2)，这样就得到了左上 (0, 0) 到右下 (H - 1, W - 1)的网格坐标了
             grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1)
-
+            # 将valid_W和valid_H拼接合并
             scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1).view(N_, 1, 1, 2)
+            # 首先将网格复制扩展成 (N, H, W, 2) 并且 + 0.5   然后再 / scale，相当于对网格坐标进行归一化
             grid = (grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale
+            # 获得一个形为 grid，值全为 2^lvl / 20 的张量wh
             wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl)
+            # 将 grid 和 wh 在最后一个维度上进行拼接得到 (N, H, W, 4)的proposal -> (N, H*W, 4)
             proposal = torch.cat((grid, wh), -1).view(N_, -1, 4)
+            # 添加到列表里
             proposals.append(proposal)
+            # 对应下标增加
             _cur += (H_ * W_)
+        
+        # 将所有的proposal按维度1进行拼接，得到 (N, Len_q, 4) 的output_proposals
         output_proposals = torch.cat(proposals, 1)
+        # 检查output_proposals最后一维上的所有行是否都满足 (output_proposals > 0.01) & (output_proposals < 0.99)
+        # output_proposals_valid 是一个 (N, Len_q, 1) 的bool张量
         output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True)
+        # 
         output_proposals = torch.log(output_proposals / (1 - output_proposals))
+        # masked_fill：在mask为True的情况下，用值填充自张量的元素。掩码的形状必须与底层张量的形状一起可广播。
+        # 把 memory_padding_mask 以及 不合法的 output_proposal 用 inf填充
         output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float('inf'))
         output_proposals = output_proposals.masked_fill(~output_proposals_valid, float('inf'))
 
         output_memory = memory
+        # 对output_memory 则对应用 0 进行填充
         output_memory = output_memory.masked_fill(memory_padding_mask.unsqueeze(-1), float(0))
         output_memory = output_memory.masked_fill(~output_proposals_valid, float(0))
+        # 对 output_memory 进行线性层投影和层归一化
         output_memory = self.enc_output_norm(self.enc_output(output_memory))
         return output_memory, output_proposals
 
@@ -144,7 +162,8 @@ class DeformableTransformer(nn.Module):
     def forward(self, srcs, masks, pos_embeds, query_embed=None):
 
         # 如果是2-stage模式，那么Decoder的query embedding由Encoder预测的top-k proposal boxes进行位置嵌入来产生
-        # 否则，使用预设的embedding
+        # 否则，使用预设的query_embed
+        # query_embed 是一个包含 num_queries=300 个 hidden_dim*2 大小张量的查找表
         assert self.two_stage or query_embed is not None
         '''
         srcs (lvl, bs, C, H, W)
@@ -211,31 +230,76 @@ class DeformableTransformer(nn.Module):
 
         # encoder   lvl_pos_embed_flatten 这个就是传入Encoder layer的的pos          mask_flatten就是传入Encoder layer的 mask
         memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
-
+        # memory (N, Len_q, C)
 
 
 
         # prepare input for decoder
         bs, _, c = memory.shape
+        # 根据是否 2-stage 分情况进行处理，因为生成的 reference points不同
         if self.two_stage:
+            # 生成proposals，并且对Encoder的输出（memory）进行处理
+            # (N, Len_q, C), (N, Len_q, 4)    其中proposal每个都是 xywh 的形式，并且是经过 inverse-sigmoid 函数后的结果
+            # 其实这里的 output_proposals 对应的就是各层特征图各个特征点的位置（相当于anchor的形式，是固定的）
+            # 因此还需要借助Decoder最后一层的bbox head来预测一个offset来获得一个更加灵活的结果
+            # 这才是第一个阶段预测的 proposal boxes
             output_memory, output_proposals = self.gen_encoder_output_proposals(memory, mask_flatten, spatial_shapes)
 
             # hack implementation for two-stage Deformable DETR
+            # 注意这里对应的是多分类，并非二分类！
+            # (N, Len_q, n_classes)
             enc_outputs_class = self.decoder.class_embed[self.decoder.num_layers](output_memory)
+            # bbox 预测的是相对 proposal 的偏移，因此这里要相加，后续还要经过 sigmoid 函数才能得到bbox预测结果（归一化形式）
+            # (N, Len_q, 4)
             enc_outputs_coord_unact = self.decoder.bbox_embed[self.decoder.num_layers](output_memory) + output_proposals
 
+            # two_stage_num_proposals = 300
             topk = self.two_stage_num_proposals
+            '''
+            当不使用iterative bbox refine时，所有的class_embed参数共享
+            这样会使得第二阶段对解码输出进行分类时都倾向于向第一个类别，貌似不妥
+            '''
+            # 取enc_outputs_class所有 N * Len_q 的第0个n_classes
+            # torch.topk 返回沿给定维度的给定输入张量的k个最大元素以及对应索引
+            # 选取得分最高的top-k分类预测，最后的[1]代表取得反回top-k对应的索引  (N, topk)
             topk_proposals = torch.topk(enc_outputs_class[..., 0], topk, dim=1)[1]
+
+
+            # 拿出top-k得分最高对应的预测 bbox：(N, topk, 4)
+            '''
+            torch.gather(input, dim, index, *, sparse_grad=False, out=None) → Tensor
+                >>> t = torch.tensor([[1, 2], [3, 4]])
+                >>> torch.gather(t, 1, torch.tensor([[0, 0], [1, 0]]))
+                tensor([[ 1,  1],
+                        [ 4,  3]])
+            '''
             topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+            # 取消梯度
             topk_coords_unact = topk_coords_unact.detach()
+            # 经过 sigmoid，变成归一化形式，这个结果会送到Decoder中作为初始的bboxes估计
             reference_points = topk_coords_unact.sigmoid()
             init_reference_out = reference_points
+            '''
+            生成Decoder的query（target）和query embedding：
+            对top-k proposal boxes进行位置编码，编码方式是给xywh每个都赋予128维
+            其中每128维中，偶数维度用sin函数，奇数维度用cos函数编码
+            然后经过全连接层和层归一化处理
+            最终，前256维结果（对应xy位置）作为Decoder的query embedding（因为xy代表的是位置信息）
+            后256维结果（对应wh）作为target（query）
+            '''
+            # (N, topk=300, 4*128=512)
             pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
+            # (N, topk=300, 256), (N, topk=300, 256)
             query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
         else:
+            # 仅为与2-stage的情况兼容  query_embed (num_queries=300, C*2)
+            # (n_query=300, 256), (n_query=300, 256)
             query_embed, tgt = torch.split(query_embed, c, dim=1)
+            # (N=bs, n_query=300, 256)
             query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
+            # (N=bs, n_query=300, 256)
             tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
+            # 通过全连接层生成proposal参考点的sigmoid归一化坐标(cx, cy): (N, n_query=300, 2)
             reference_points = self.reference_points(query_embed).sigmoid()
             init_reference_out = reference_points
 
@@ -360,7 +424,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
         self.dropout4 = nn.Dropout(dropout)
         self.norm3 = nn.LayerNorm(d_model)
 
-    @staticmethod
+    @staticmethod # tensor 与位置编码 合并
     def with_pos_embed(tensor, pos):
         return tensor if pos is None else tensor + pos
 
@@ -371,17 +435,21 @@ class DeformableTransformerDecoderLayer(nn.Module):
         return tgt
 
     def forward(self, tgt, query_pos, reference_points, src, src_spatial_shapes, level_start_index, src_padding_mask=None):
-        # self attention
+        # self attention   q和k都是由tgt和query_pos加和得到的，v就是tgt本身
         q = k = self.with_pos_embed(tgt, query_pos)
         tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), tgt.transpose(0, 1))[0].transpose(0, 1)
+        # 残差连接
         tgt = tgt + self.dropout2(tgt2)
+        # 层归一化
         tgt = self.norm2(tgt)
 
-        # cross attention
+        # cross attention   这里query是由tgt和query_pos加和得到的，src是input_flatten
         tgt2 = self.cross_attn(self.with_pos_embed(tgt, query_pos),
                                reference_points,
                                src, src_spatial_shapes, level_start_index, src_padding_mask)
+        # 残差连接
         tgt = tgt + self.dropout1(tgt2)
+        # 层归一化
         tgt = self.norm1(tgt)
 
         # ffn
@@ -397,22 +465,29 @@ class DeformableTransformerDecoder(nn.Module):
         self.num_layers = num_layers
         self.return_intermediate = return_intermediate
         # hack implementation for iterative bounding box refinement and two-stage Deformable DETR
+        # 下面两个成员是在deformable_detr代码中赋值的
         self.bbox_embed = None
         self.class_embed = None
 
+    # src是input_flatten，  src_valid_ratios是各特征层中非padding部分的边长（高&宽）占特征图边长的比例
     def forward(self, tgt, reference_points, src, src_spatial_shapes, src_level_start_index, src_valid_ratios,
                 query_pos=None, src_padding_mask=None):
         output = tgt
 
         intermediate = []
         intermediate_reference_points = []
+        # 枚举解码器的每一层
         for lid, layer in enumerate(self.layers):
+            # 最后一维是4代表 two-stage模式
             if reference_points.shape[-1] == 4:
+                # 将reference_point的四个坐标都 缩放到非padding的比例内
                 reference_points_input = reference_points[:, :, None] \
                                          * torch.cat([src_valid_ratios, src_valid_ratios], -1)[:, None]
-            else:
+            else: # refine模式
                 assert reference_points.shape[-1] == 2
+                # 将reference_point 缩放到非padding的比例内
                 reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
+            # 解码器单层计算
             output = layer(output, query_pos, reference_points_input, src, src_spatial_shapes, src_level_start_index, src_padding_mask)
 
             # hack implementation for iterative bounding box refinement

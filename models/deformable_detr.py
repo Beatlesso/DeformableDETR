@@ -55,7 +55,7 @@ class DeformableDETR(nn.Module):
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.num_feature_levels = num_feature_levels
         if not two_stage: 
-            # query_embed 是一个包含 num_queries 个 hidden_dim*2 大小张量的查找表
+            # query_embed 是一个包含 num_queries=300 个 hidden_dim*2 大小张量的查找表
             self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
         # 如果是多尺度
         if num_feature_levels > 1:
